@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tgame</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>%3E_</text></svg>">
+<style>
+  /* Deliberately tiny. Monospace, one column, no framework. */
+  body { background:#111; color:#ddd; font:14px/1.45 ui-monospace,Menlo,Consolas,monospace;
+         max-width:76ch; margin:2rem auto; padding:0 1rem; }
+  a, button { color:#8cf; }
+  h1, h2 { font-size:1rem; font-weight:bold; margin:1.2rem 0 .4rem; }
+  hr { border:0; border-top:1px solid #333; margin:1rem 0; }
+  input, button { font:inherit; background:#000; color:#ddd; border:1px solid #444;
+                  padding:.25rem .4rem; }
+  button { cursor:pointer; }
+  button:hover { border-color:#8cf; }
+  #out { white-space:pre-wrap; word-break:break-word; min-height:14rem; max-height:26rem;
+         overflow-y:auto; border:1px solid #333; padding:.5rem; margin:.5rem 0; }
+  #line { width:100%; }
+  .row { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+  .muted { color:#888; }
+  .win { color:#7d7; } .loss { color:#f77; } .warn { color:#fc6; }
+  .hide { display:none; }
+  table { border-collapse:collapse; width:100%; }
+  td, th { text-align:left; padding:.15rem .5rem .15rem 0; }
+</style>
+</head>
+<body>
+
+<h1>tgame — linux sysadmin, competitively</h1>
+<p class="muted" id="whoami">not signed in</p>
+
+<!-- auth -->
+<section id="auth">
+  <div class="row">
+    <input id="username" placeholder="username" autocomplete="username">
+    <input id="password" type="password" placeholder="password" autocomplete="current-password">
+    <button id="login">log in</button>
+    <button id="register">register</button>
+  </div>
+  <p class="muted">Or <a href="#" id="playSolo">play solo</a> — no account, no rating.</p>
+  <p id="authError" class="loss"></p>
+</section>
+
+<!-- menu -->
+<section id="menu" class="hide">
+  <div class="row">
+    <button id="btnRanked">ranked race</button>
+    <button id="btnSolo">solo practice</button>
+    <button id="btnChaos">create chaos room</button>
+    <input id="roomCode" placeholder="code" size="6">
+    <button id="btnJoin">join room</button>
+    <button id="btnLogout">log out</button>
+  </div>
+  <h2>leaderboard</h2>
+  <div id="board" class="muted">loading…</div>
+  <h2>your recent matches</h2>
+  <div id="history" class="muted">—</div>
+</section>
+
+<!-- game -->
+<section id="game" class="hide">
+  <div id="status" class="muted"></div>
+  <div id="brief"></div>
+  <div id="out"></div>
+  <div class="row">
+    <span id="prompt" class="muted">$</span>
+    <input id="line" autocomplete="off" autocapitalize="off" spellcheck="false" autofocus>
+  </div>
+  <p class="muted" id="gameHelp"></p>
+  <div class="row">
+    <button id="btnHint">hint</button>
+    <button id="btnQuit">leave</button>
+  </div>
+</section>
+
+<script type="module" src="/client/app.js"></script>
+</body>
+</html>
