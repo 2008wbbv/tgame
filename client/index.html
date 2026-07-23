@@ -18,6 +18,10 @@
   button:hover { border-color:#8cf; }
   #out { white-space:pre-wrap; word-break:break-word; min-height:14rem; max-height:26rem;
          overflow-y:auto; border:1px solid #333; padding:.5rem; margin:.5rem 0; }
+  #buf { white-space:pre; overflow:auto; border:1px solid #333; padding:.5rem;
+         min-height:16rem; margin:.5rem 0; }
+  #buf b { background:#ddd; color:#111; font-weight:normal; } /* the block cursor */
+  .tilde { color:#44f; }
   #line { width:100%; }
   .row { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
   .muted { color:#888; }
@@ -58,6 +62,13 @@
   <div id="board" class="muted">loading…</div>
   <h2>your recent matches</h2>
   <div id="history" class="muted">—</div>
+</section>
+
+<!-- editor (vim) -->
+<section id="editor" class="hide">
+  <div id="buf"></div>
+  <div id="editorStatus"></div>
+  <p class="muted">vim: hjkl 0 $ gg G w b · i a I A o O · x dd p · :w :q :wq :q!</p>
 </section>
 
 <!-- game -->

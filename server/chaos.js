@@ -7,6 +7,7 @@
 
 import { Shell } from '../engine/shell.js';
 import { VFS, dir, file } from '../engine/vfs.js';
+import { completeFor } from './race.js';
 
 export const SHARED = '/srv/shared';
 export const CHAOS_TIME_MS = 5 * 60 * 1000;
@@ -98,6 +99,7 @@ export class ChaosRoom {
       out: result.out,
       code: result.code,
       cwd: me.shell.cwd,
+      editor: result.editor || null,
     });
 
     const scores = this.scores();
@@ -112,6 +114,37 @@ export class ChaosRoom {
         });
       }
     }
+    return { ok: true };
+  }
+
+  /**
+   * Saves an editor buffer to the shared filesystem. Announced to the room like
+   * any other action - writing a file here is as contestable as deleting one.
+   */
+  save(userId, { path, content, sudo }) {
+    if (this.over) return { error: 'room has finished' };
+    const me = this.players.get(userId);
+    if (!me) return { error: 'not in this room' };
+
+    const res = me.shell.writeFile(path, content ?? '', { sudo });
+    if (res.error) {
+      me.send({ type: 'editor_saved', path, error: res.error });
+      return { ok: true };
+    }
+
+    const scores = this.scores();
+    me.send({ type: 'editor_saved', path, bytes: res.bytes });
+    for (const [id, p] of this.players) {
+      if (id === userId) p.send({ type: 'chaos_scores', scores });
+      else p.send({ type: 'chaos_feed', username: me.username, line: `:w ${path}`, scores });
+    }
+    return { ok: true };
+  }
+
+  complete(userId, line) {
+    const me = this.players.get(userId);
+    if (!me) return { error: 'not in this room' };
+    me.send({ type: 'completion', ...completeFor(me.shell, line) });
     return { ok: true };
   }
 
@@ -214,6 +247,18 @@ export class ChaosManager {
     const room = this.roomFor(userId);
     if (!room) return { error: 'not in a room' };
     return room.command(userId, line);
+  }
+
+  save(userId, payload) {
+    const room = this.roomFor(userId);
+    if (!room) return { error: 'not in a room' };
+    return room.save(userId, payload);
+  }
+
+  complete(userId, line) {
+    const room = this.roomFor(userId);
+    if (!room) return { error: 'not in a room' };
+    return room.complete(userId, line);
   }
 
   leave(userId, connId = null) {

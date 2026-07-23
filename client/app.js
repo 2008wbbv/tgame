@@ -1,8 +1,10 @@
 // Client. Solo play runs the engine locally; ranked races and chaos rooms run
 // on the server and this is just a terminal attached to a socket.
 
-import { Shell } from '../engine/shell.js';
+import { Shell, COMMAND_NAMES } from '../engine/shell.js';
 import { MISSIONS, byId } from '../engine/missions.js';
+import { VimEditor } from '../engine/editor.js';
+import { complete } from '../engine/complete.js';
 import { Terminal } from './term.js';
 
 const $ = (id) => document.getElementById(id);
@@ -16,6 +18,7 @@ let mode = null; // 'solo' | 'race' | 'chaos'
 let solo = null; // { index, shell, mission }
 let currentMission = null;
 let timerHandle = null;
+let vim = null; // the open VimEditor, if any
 
 // ------------------------------------------------------------------ helpers
 
@@ -215,6 +218,28 @@ function onMessage(m) {
       if (m.advanced) term.echo(`* mission solved (${m.solved})`, 'win');
       if (m.mission) showBrief(m.mission);
       if (m.cwd) term.prompt = `${me.username}@${mode === 'chaos' ? 'shared' : 'web01'}:${m.cwd}$`;
+      if (m.editor) openEditor(m.editor);
+      break;
+
+    case 'editor_saved': {
+      if (!vim) break;
+      if (m.error) {
+        vim.message = m.error;
+      } else {
+        vim.dirty = false;
+        vim.message = `"${m.path}" ${m.bytes}B written`;
+        if (m.advanced) term.echo(`* mission solved (${m.solved})`, 'win');
+        if (m.mission) showBrief(m.mission);
+      }
+      renderEditor();
+      // :wq only closes once the server has accepted the write.
+      if (!m.error && pendingSaveThen) pendingSaveThen();
+      pendingSaveThen = null;
+      break;
+    }
+
+    case 'completion':
+      applyCompletion(m);
       break;
 
     case 'opponent_progress':
@@ -282,6 +307,95 @@ function renderScores(scores) {
   $('brief').textContent = `owned files — ${line}`;
 }
 
+// ---------------------------------------------------------------- vim
+
+function openEditor({ path, content, sudo }) {
+  vim = new VimEditor(path, content);
+  vim.sudo = !!sudo;
+  show('editor', true);
+  $('line').disabled = true;
+  renderEditor();
+}
+
+function closeEditor() {
+  vim = null;
+  show('editor', false);
+  $('line').disabled = false;
+  term.focus();
+}
+
+function renderEditor() {
+  if (!vim) return;
+  const buf = $('buf');
+  buf.innerHTML = '';
+  vim.lines.forEach((text, y) => {
+    const row = document.createElement('div');
+    if (y === vim.cy) {
+      // Split the line so the cursor cell can be highlighted.
+      const before = text.slice(0, vim.cx);
+      const at = text[vim.cx] ?? ' ';
+      const after = text.slice(vim.cx + 1);
+      row.append(document.createTextNode(before));
+      const cur = document.createElement('b');
+      cur.textContent = at;
+      row.append(cur, document.createTextNode(after));
+    } else {
+      row.textContent = text;
+    }
+    buf.append(row);
+  });
+  // vim pads the window with tildes.
+  for (let i = vim.lines.length; i < 12; i++) {
+    const row = document.createElement('div');
+    row.className = 'tilde';
+    row.textContent = '~';
+    buf.append(row);
+  }
+  $('editorStatus').textContent = vim.status();
+}
+
+/** Persists the buffer: locally in solo, server-side otherwise. */
+function saveEditor(then) {
+  if (mode === 'solo') {
+    const res = solo.shell.writeFile(vim.path, vim.content, { sudo: vim.sudo });
+    if (res.error) {
+      vim.message = res.error;
+      renderEditor();
+      return;
+    }
+    vim.dirty = false;
+    vim.message = `"${vim.path}" ${res.bytes}B written`;
+    renderEditor();
+    if (then) then();
+    // A save can complete a mission.
+    checkSoloMission();
+    return;
+  }
+  pendingSaveThen = then;
+  send({ type: 'editor_save', path: vim.path, content: vim.content, sudo: vim.sudo });
+}
+
+let pendingSaveThen = null;
+
+document.addEventListener('keydown', (e) => {
+  if (!vim) return;
+  // The editor owns the keyboard while it is open.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const named = { Escape: 'Escape', Enter: 'Enter', Backspace: 'Backspace', Tab: 'Tab' };
+  const key = named[e.key] || (e.key.length === 1 ? e.key : null);
+  if (key === null) return;
+  e.preventDefault();
+
+  const action = vim.handleKey(key);
+  renderEditor();
+  if (!action) return;
+
+  if (action.type === 'write') saveEditor();
+  else if (action.type === 'write-quit') saveEditor(closeEditor);
+  else if (action.type === 'quit') closeEditor();
+});
+
 // -------------------------------------------------------------------- solo
 
 function startSolo() {
@@ -310,10 +424,38 @@ function soloCommand(line) {
   const res = solo.shell.run(line);
   term.echo(res.out);
   term.prompt = `op@web01:${solo.shell.cwd}$`;
-  if (m.check(solo.shell)) {
-    term.echo(`* mission solved: ${m.title}`, 'win');
-    solo.index++;
-    loadSolo();
+  if (res.editor) return openEditor(res.editor);
+  checkSoloMission();
+}
+
+function checkSoloMission() {
+  const m = MISSIONS[solo?.index];
+  if (!m || !m.check(solo.shell)) return;
+  term.echo(`* mission solved: ${m.title}`, 'win');
+  solo.index++;
+  loadSolo();
+}
+
+// --------------------------------------------------------------- completion
+
+/** Tab: complete locally in solo, otherwise ask the server. */
+term.onComplete = (line) => {
+  if (mode === 'solo') {
+    if (!solo?.shell) return;
+    const sh = solo.shell;
+    applyCompletion(
+      complete({ vfs: sh.vfs, cwd: sh.cwd, user: sh.user, commands: COMMAND_NAMES }, line)
+    );
+  } else {
+    send({ type: 'complete', line });
+  }
+};
+
+function applyCompletion({ line, matches }) {
+  if (line !== undefined) term.input.value = line;
+  // Ambiguous: show the options, the way a shell does.
+  if (matches && matches.length > 1) {
+    term.echo(matches.join('  '), 'muted');
   }
 }
 

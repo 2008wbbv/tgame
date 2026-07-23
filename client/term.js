@@ -8,6 +8,7 @@ export class Terminal {
     this.history = [];
     this.cursor = 0;
     this.onCommand = () => {};
+    this.onComplete = () => {};
 
     this.input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
@@ -28,6 +29,10 @@ export class Terminal {
           this.cursor++;
           this.input.value = this.history[this.cursor] ?? '';
         }
+      } else if (e.key === 'Tab') {
+        // Never let Tab move focus out of the terminal.
+        e.preventDefault();
+        this.onComplete(this.input.value);
       } else if (e.key === 'l' && e.ctrlKey) {
         e.preventDefault();
         this.clear();

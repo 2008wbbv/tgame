@@ -393,15 +393,35 @@ const COMMANDS = {
     return ok();
   },
 
+  /**
+   * Does not edit anything itself - it asks the host to open an editor, so the
+   * same command works in the browser and in a real terminal.
+   */
+  vim(args, stdin, ctx) {
+    const p = args.find((a) => !a.startsWith('-'));
+    if (!p) return err('usage: vim FILE');
+    const abs = resolvePath(ctx.cwd, p, HOME);
+    const node = ctx.vfs.get(abs);
+    if (node && node.type === DIR) return err(`vim: ${p}: Is a directory`);
+    if (node && !ctx.vfs.can(node, ctx.user, 'r')) return err(`vim: ${p}: Permission denied`);
+    return { out: '', code: 0, editor: { path: abs, content: node ? node.content : '' } };
+  },
+
   help: () =>
     ok(
       [
         'commands: ls cd pwd cat echo touch mkdir rm mv cp chmod chown',
-        '          grep find du ps kill sudo whoami help',
-        'features: pipes (|), redirects (> >>), quotes, ~ and .. paths',
+        '          grep find du ps kill vim sudo whoami help',
+        'features: pipes (|), redirects (> >>), quotes, ~ and .. paths,',
+        '          TAB completion, up/down history',
       ].join('\n')
     ),
 };
+
+COMMANDS.vi = COMMANDS.vim;
+
+/** Command names available for tab completion. */
+export const COMMAND_NAMES = [...Object.keys(COMMANDS), 'sudo'];
 
 function longFormat(name, node) {
   const size = node.type === FILE ? node.content.length : Object.keys(node.children).length * 4;
@@ -462,6 +482,27 @@ export class Shell {
     this.history = [];
   }
 
+  /**
+   * Writes a buffer back to the filesystem, enforcing the same permissions a
+   * redirect would. Used by the editor's `:w`.
+   * @returns {ok:true} or {error}
+   */
+  writeFile(abs, content, { sudo = false } = {}) {
+    const writer = sudo && this.allowSudo ? 'root' : this.user;
+    const existing = this.vfs.get(abs);
+    if (existing && existing.type === DIR) return { error: `${abs}: Is a directory` };
+    if (existing) {
+      if (!this.vfs.can(existing, writer, 'w')) return { error: `${abs}: Permission denied` };
+      existing.content = content;
+      return { ok: true, bytes: content.length };
+    }
+    const { parent, name } = this.vfs.parentOf(abs);
+    if (!parent) return { error: `${abs}: No such file or directory` };
+    if (!this.vfs.can(parent, writer, 'w')) return { error: `${abs}: Permission denied` };
+    parent.children[name] = file(content, writer);
+    return { ok: true, bytes: content.length };
+  }
+
   /** Runs one command line and returns its combined output. */
   run(line) {
     line = line.trim();
@@ -480,6 +521,7 @@ export class Shell {
     let stdin = '';
     let code = 0;
     let sudoUsed = false;
+    let editor = null;
 
     for (const stage of stages) {
       let [name, ...args] = stage;
@@ -506,8 +548,15 @@ export class Shell {
       this.cwd = ctx.cwd; // `cd` mutates through ctx
       stdin = result.out;
       code = result.code;
+      // An editor request escapes the pipeline: it is for the host, not stdin.
+      if (result.editor) {
+        editor = result.editor;
+        editor.sudo = sudoUsed;
+      }
       if (code !== 0 && stages.length > 1) break;
     }
+
+    if (editor) return { out: stdin, code, editor };
 
     if (redirect && code === 0) {
       // Unlike real bash, a `sudo` anywhere in the pipeline also elevates the

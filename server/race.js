@@ -1,7 +1,8 @@
 // Ranked 1v1 races. The server owns the shell for each player, so mission
 // completion is verified here - a client cannot simply claim it won.
 
-import { Shell } from '../engine/shell.js';
+import { Shell, COMMAND_NAMES } from '../engine/shell.js';
+import { complete } from '../engine/complete.js';
 import { missionSet, byId } from '../engine/missions.js';
 import { updateElo, scoreRace } from './elo.js';
 import { getUserById, setElo, recordMatch, recordResult } from './db.js';
@@ -113,26 +114,24 @@ export class RaceManager {
     return id === undefined ? null : this.races.get(id);
   }
 
-  /** Runs one command for a player and reports progress to both sides. */
-  command(userId, line) {
+  /** Resolves the player whose turn it is to act, or an error. */
+  activePlayer(userId) {
     const race = this.raceFor(userId);
     if (!race || race.over) return { error: 'not in a race' };
     if (Date.now() < race.startsAt) return { error: 'race has not started' };
-
     const me = race.players.find((p) => p.userId === userId);
     if (me.finishedAt) return { error: 'you already finished' };
+    return { race, me };
+  }
+
+  /** Runs one command for a player and reports progress to both sides. */
+  command(userId, line) {
+    const found = this.activePlayer(userId);
+    if (found.error) return found;
+    const { race, me } = found;
 
     const result = me.shell.run(line);
-    const mission = byId(race.missions[me.index]);
-    let advanced = false;
-
-    if (mission.check(me.shell)) {
-      me.solved++;
-      me.index++;
-      advanced = true;
-      if (me.index >= race.missions.length) me.finishedAt = Date.now();
-      else loadMission(me, race.missions[me.index]);
-    }
+    const advanced = this.checkProgress(race, me);
 
     me.send({
       type: 'output',
@@ -142,20 +141,70 @@ export class RaceManager {
       solved: me.solved,
       advanced,
       mission: me.finishedAt ? null : briefFor(me, race.missions),
+      // Tells the client to open its editor on this buffer.
+      editor: result.editor || null,
     });
 
+    this.settleIfDone(race, me, advanced);
+    return { ok: true };
+  }
+
+  /** Saves an editor buffer. Editing a file can itself complete a mission. */
+  save(userId, { path, content, sudo }) {
+    const found = this.activePlayer(userId);
+    if (found.error) return found;
+    const { race, me } = found;
+
+    const res = me.shell.writeFile(path, content ?? '', { sudo });
+    if (res.error) {
+      me.send({ type: 'editor_saved', path, error: res.error });
+      return { ok: true };
+    }
+
+    const advanced = this.checkProgress(race, me);
+    me.send({
+      type: 'editor_saved',
+      path,
+      bytes: res.bytes,
+      solved: me.solved,
+      advanced,
+      mission: me.finishedAt ? null : briefFor(me, race.missions),
+    });
+
+    this.settleIfDone(race, me, advanced);
+    return { ok: true };
+  }
+
+  complete(userId, line) {
+    const found = this.activePlayer(userId);
+    if (found.error) return found;
+    const { me } = found;
+    me.send({ type: 'completion', ...completeFor(me.shell, line) });
+    return { ok: true };
+  }
+
+  /** Advances the player if the current mission is now satisfied. */
+  checkProgress(race, me) {
+    const mission = byId(race.missions[me.index]);
+    if (!mission || !mission.check(me.shell)) return false;
+    me.solved++;
+    me.index++;
+    if (me.index >= race.missions.length) me.finishedAt = Date.now();
+    else loadMission(me, race.missions[me.index]);
+    return true;
+  }
+
+  settleIfDone(race, me, advanced) {
     const other = race.players.find((p) => p !== me);
     if (advanced) {
       other.send({ type: 'opponent_progress', solved: me.solved, total: race.missions.length });
     }
-
     // Everyone done, or this player finished first - settle it.
     if (race.players.every((p) => p.finishedAt)) this.finish(race.id, 'complete');
     else if (me.finishedAt) {
       other.send({ type: 'opponent_finished', solved: me.solved });
       this.finish(race.id, 'complete');
     }
-    return { ok: true };
   }
 
   /**
@@ -228,6 +277,15 @@ export class RaceManager {
     }
     this.races.delete(raceId);
   }
+}
+
+/** Shared by both modes: completion always reflects the server's filesystem. */
+export function completeFor(shell, line) {
+  const { line: completed, matches } = complete(
+    { vfs: shell.vfs, cwd: shell.cwd, user: shell.user, commands: COMMAND_NAMES },
+    line || ''
+  );
+  return { line: completed, matches };
 }
 
 function loadMission(player, missionId) {

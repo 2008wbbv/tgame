@@ -401,6 +401,139 @@ test('a second tab closing does not evict the live session', async () => {
   });
 });
 
+// ------------------------------------------------------- editor + completion
+
+test('vim over the wire: the server owns the write', async () => {
+  await withServer(async (ctx) => {
+    const a = await signUp(ctx, 'alice');
+    const b = await signUp(ctx, 'bob');
+    a.client.send({ type: 'queue' });
+    await a.client.wait('queued');
+    b.client.send({ type: 'queue' });
+    await a.client.wait('race_start');
+    await b.client.wait('race_start');
+
+    // Opening a file hands back its contents to edit.
+    a.client.send({ type: 'cmd', line: 'vim /home/op/scratch.txt' });
+    const opened = await a.client.wait('output');
+    assert.ok(opened.editor, 'the client is told to open an editor');
+    assert.equal(opened.editor.path, '/home/op/scratch.txt');
+    assert.equal(opened.editor.content, '');
+
+    // Saving it persists server-side.
+    a.client.send({
+      type: 'editor_save',
+      path: '/home/op/scratch.txt',
+      content: 'written in vim\n',
+    });
+    const saved = await a.client.wait('editor_saved');
+    assert.equal(saved.error, undefined);
+    assert.equal(saved.bytes, 15);
+
+    a.client.send({ type: 'cmd', line: 'cat /home/op/scratch.txt' });
+    assert.match((await a.client.wait('output')).out, /written in vim/);
+
+    // A write the player has no permission for is refused by the server.
+    a.client.send({ type: 'editor_save', path: '/etc/passwd', content: 'pwned\n' });
+    const refused = await a.client.wait('editor_saved');
+    assert.match(refused.error, /Permission denied/);
+
+    // ...and sudo vim is honoured.
+    a.client.send({ type: 'editor_save', path: '/etc/passwd', content: 'ok\n', sudo: true });
+    assert.equal((await a.client.wait('editor_saved')).error, undefined);
+
+    a.client.close();
+    b.client.close();
+  });
+});
+
+test('saving in vim can itself solve a mission', async () => {
+  await withServer(async (ctx) => {
+    const a = await signUp(ctx, 'alice');
+    const b = await signUp(ctx, 'bob');
+    a.client.send({ type: 'queue' });
+    await a.client.wait('queued');
+    b.client.send({ type: 'queue' });
+    const start = await a.client.wait('race_start');
+    await b.client.wait('race_start');
+
+    // Drive whatever mission came up to a state vim can finish, then use vim
+    // for the final write on the missions that are a file-content check.
+    const writable = {
+      recon: ['/home/op/recon.txt', '/home/op\n'],
+      'count-attackers': ['/home/op/attacker.txt', '45.9.14.7\n'],
+    };
+    const target = writable[start.mission.id];
+    if (!target) return; // this seed drew a mission vim cannot finish alone
+
+    a.client.send({ type: 'editor_save', path: target[0], content: target[1] });
+    const saved = await a.client.wait('editor_saved');
+    assert.equal(saved.advanced, true, 'the save completed the mission');
+    assert.equal(saved.solved, 1);
+
+    a.client.close();
+    b.client.close();
+  });
+});
+
+test('tab completion is answered from the server filesystem', async () => {
+  await withServer(async (ctx) => {
+    const a = await signUp(ctx, 'alice');
+    const b = await signUp(ctx, 'bob');
+    a.client.send({ type: 'queue' });
+    await a.client.wait('queued');
+    b.client.send({ type: 'queue' });
+    await a.client.wait('race_start');
+    await b.client.wait('race_start');
+
+    a.client.send({ type: 'complete', line: 'cat /var/log/au' });
+    const one = await a.client.wait('completion');
+    assert.equal(one.line, 'cat /var/log/auth.log ');
+
+    a.client.send({ type: 'complete', line: 'ch' });
+    const many = await a.client.wait('completion');
+    assert.deepEqual(many.matches, ['chmod', 'chown']);
+
+    a.client.close();
+    b.client.close();
+  });
+});
+
+test('chaos rooms support vim and completion on the shared filesystem', async () => {
+  await withServer(async (ctx) => {
+    const a = await signUp(ctx, 'alice');
+    const b = await signUp(ctx, 'bob');
+
+    a.client.send({ type: 'chaos_create' });
+    const joined = await a.client.wait('chaos_joined');
+    b.client.send({ type: 'chaos_join', code: joined.code });
+    await b.client.wait('chaos_joined');
+    await a.client.wait('chaos_join');
+
+    // Alice writes a file with vim; it counts toward her score.
+    a.client.send({ type: 'editor_save', path: '/srv/shared/notes', content: 'hi\n' });
+    const saved = await a.client.wait('editor_saved');
+    assert.equal(saved.bytes, 3);
+    const scores = (await a.client.wait('chaos_scores')).scores;
+    assert.equal(scores.find((s) => s.username === 'alice').files, 1);
+
+    // Bob sees the write in his feed and can still delete it.
+    const feed = await b.client.wait('chaos_feed');
+    assert.match(feed.line, /:w \/srv\/shared\/notes/);
+    const gone = await chaosRun(b.client, 'rm /srv/shared/notes');
+    assert.equal(gone.out.code, 0);
+    assert.equal(gone.scores.find((s) => s.username === 'alice').files, 0);
+
+    // Completion sees the shared tree, including bob's own additions.
+    await chaosRun(b.client, 'echo x > /srv/shared/bobfile');
+    b.client.send({ type: 'complete', line: 'cat /srv/shared/bobf' });
+    assert.equal((await b.client.wait('completion')).line, 'cat /srv/shared/bobfile ');
+
+    a.client.close();
+    b.client.close();
+  });
+});
+
 // -------------------------------------------------------------- chaos rooms
 
 test('chaos room: shared filesystem, mutual sabotage, scored by ownership', async () => {

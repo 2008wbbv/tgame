@@ -105,6 +105,20 @@ export function createServer({ db = openDb(), raceOpts, chaosOpts } = {}) {
           if (chaos.roomFor(user.id)) return fail(chaos.command(user.id, msg.line || ''));
           return send({ type: 'error', error: 'not in a game' });
         }
+
+        case 'editor_save': {
+          // The buffer is edited client-side, but the write is checked here.
+          const payload = { path: msg.path, content: msg.content, sudo: !!msg.sudo };
+          if (races.raceFor(user.id)) return fail(races.save(user.id, payload));
+          if (chaos.roomFor(user.id)) return fail(chaos.save(user.id, payload));
+          return send({ type: 'error', error: 'not in a game' });
+        }
+
+        case 'complete': {
+          if (races.raceFor(user.id)) return fail(races.complete(user.id, msg.line || ''));
+          if (chaos.roomFor(user.id)) return fail(chaos.complete(user.id, msg.line || ''));
+          return send({ type: 'error', error: 'not in a game' });
+        }
         default:
           return send({ type: 'error', error: `unknown message: ${msg.type}` });
       }

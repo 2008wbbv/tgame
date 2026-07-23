@@ -4,9 +4,13 @@
   "description": "Competitive Linux sysadmin terminal game with Elo ranking and shared-filesystem chaos rooms",
   "type": "module",
   "main": "server/index.js",
+  "bin": {
+    "tgame": "bin/tgame.js"
+  },
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "solo": "node bin/tgame.js solo",
     "test": "node --test \"test/*.test.js\""
   },
   "engines": {
